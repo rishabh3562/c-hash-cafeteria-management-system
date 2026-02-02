@@ -9,7 +9,7 @@ using System.Text;
 class Program
 {
     // Toggle to seed sample data (set true once to seed)
-    static bool SEED_MODE = false;
+    static bool SEED_MODE = true;
 
     // Session
     static int CurrentUserId = -1;
@@ -69,6 +69,62 @@ class Program
         var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(input));
         return Convert.ToBase64String(bytes);
     }
+    static int SelectVendor()
+    {
+        using var con = Db.GetConn();
+        con.Open();
+
+        var cmd = new SQLiteCommand("SELECT Id,Name FROM Vendors WHERE IsActive=1", con);
+        using var r = cmd.ExecuteReader();
+
+        Header("SELECT VENDOR");
+
+        var list = new List<int>();
+        while (r.Read())
+        {
+            int id = Convert.ToInt32(r["Id"]);
+            string name = r["Name"].ToString()!;
+            list.Add(id);
+            Console.WriteLine($"{id}. {name}");
+        }
+
+        Console.Write("\nChoose Vendor (0 Back): ");
+        int v = ReadInt(0, 9999);
+
+        return list.Contains(v) ? v : 0;
+    }
+
+
+
+
+    static int SelectFoodItem(int vendorId)
+    {
+        using var con = Db.GetConn();
+        con.Open();
+
+        var cmd = new SQLiteCommand(
+            "SELECT Id,Name,Price,Quantity FROM FoodItems WHERE VendorId=@v",
+            con);
+        cmd.Parameters.AddWithValue("@v", vendorId);
+
+        using var r = cmd.ExecuteReader();
+
+        Header("SELECT FOOD ITEM");
+
+        var list = new List<int>();
+        while (r.Read())
+        {
+            int id = Convert.ToInt32(r["Id"]);
+            list.Add(id);
+            Console.WriteLine($"{id}. {r["Name"]} ₹{r["Price"]} Qty:{r["Quantity"]}");
+        }
+
+        Console.Write("\nChoose Food (0 Back): ");
+        int f = ReadInt(0, 9999);
+
+        return list.Contains(f) ? f : 0;
+    }
+
     static void CustomerAuth()
     {
         Header("CUSTOMER LOGIN / REGISTER");
@@ -104,6 +160,8 @@ class Program
             CustomerMenu();
             return;
         }
+
+
 
         // REGISTER (auto-login on success)
         Console.WriteLine("\nNo account found — registering new customer.");
@@ -250,6 +308,32 @@ class Program
         cmd.Parameters.AddWithValue("@v", vendorId);
         long cnt = (long)cmd.ExecuteScalar()!;
         return cnt > 0;
+    }
+    static int SelectCustomer()
+    {
+        using var con = Db.GetConn();
+        con.Open();
+
+        var cmd = new SQLiteCommand(
+            "SELECT Id,Name,Username FROM Users WHERE Role='Customer' AND IsActive=1",
+            con);
+
+        using var r = cmd.ExecuteReader();
+
+        var list = new List<int>();
+        Header("SELECT CUSTOMER");
+
+        while (r.Read())
+        {
+            int id = Convert.ToInt32(r["Id"]);
+            list.Add(id);
+            Console.WriteLine($"{id}. {r["Name"]} ({r["Username"]})");
+        }
+
+        Console.Write("\nChoose Customer (0 Back): ");
+        int c = ReadInt(0, 9999);
+
+        return list.Contains(c) ? c : 0;
     }
 
     static void AddToCart(int vendorId, int foodId, int qty)
@@ -482,8 +566,10 @@ class Program
     static void VendorLogin()
     {
         Header("VENDOR LOGIN");
-        Console.Write("VendorId: ");
-        int vid = ReadInt(1, 9999);
+        // Console.Write("VendorId: ");
+        // int vid = ReadInt(1, 9999);
+        int vid = SelectVendor();
+        if (vid == 0) return;
 
         using var con = Db.GetConn();
         con.Open();
@@ -517,8 +603,12 @@ class Program
             else if (ch == 4) UpdateFoodQty(vid);
             else if (ch == 5)
             {
-                Console.Write("Food Id: ");
-                RequestDeletion("FoodItem", ReadInt(1, 9999));
+                // Console.Write("Food Id: ");
+                // RequestDeletion("FoodItem", ReadInt(1, 9999));
+                int id = SelectFoodItem(vid);
+                if (id == 0) return;
+                RequestDeletion("FoodItem", id);
+
             }
             else if (ch == 6) ShowVendorOrders(vid);
             else return;
@@ -571,8 +661,11 @@ class Program
 
     static void UpdateFoodPrice(int vid)
     {
-        Console.Write("Food Id: ");
-        int id = ReadInt(1, 99999);
+        // Console.Write("Food Id: ");
+        // int id = ReadInt(1, 99999);
+        int id = SelectFoodItem(vid);
+        if (id == 0) return;
+
         Console.Write("New Price: ");
         double p = ReadDouble();
 
@@ -590,8 +683,10 @@ class Program
 
     static void UpdateFoodQty(int vid)
     {
-        Console.Write("Food Id: ");
-        int id = ReadInt(1, 99999);
+        // Console.Write("Food Id: ");
+        // int id = ReadInt(1, 99999);
+        int id = SelectFoodItem(vid);
+        if (id == 0) return;
         Console.Write("Add Qty (use negative to reduce): ");
         int add = ReadInt(-9999, 9999);
 
@@ -681,8 +776,10 @@ class Program
 
     static void ToggleVendor()
     {
-        Console.Write("Vendor Id: ");
-        int id = ReadInt(1, 99999);
+        // Console.Write("Vendor Id: ");
+        // int id = ReadInt(1, 99999);
+        int id = SelectVendor();
+        if (id == 0) return;
 
         using var con = Db.GetConn();
         con.Open();
@@ -715,8 +812,10 @@ class Program
 
     static void DisableCustomer()
     {
-        Console.Write("User Id: ");
-        int id = ReadInt(1, 99999);
+        // Console.Write("User Id: ");
+        // int id = ReadInt(1, 99999);
+        int id = SelectCustomer();
+        if (id == 0) return;
 
         using var con = Db.GetConn();
         con.Open();
