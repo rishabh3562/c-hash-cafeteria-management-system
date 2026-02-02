@@ -3,13 +3,14 @@ using System.Data.SQLite;
 using System.Collections.Generic;
 using System.Security.Cryptography;
 using System.Text;
+using System.Linq;
 
 
 // Entry point
 class Program
 {
     // Toggle to seed sample data (set true once to seed)
-    static bool SEED_MODE = true;
+    static bool SEED_MODE = false;
 
     // Session
     static int CurrentUserId = -1;
@@ -69,31 +70,31 @@ class Program
         var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(input));
         return Convert.ToBase64String(bytes);
     }
-    static int SelectVendor()
+    static int SelectVendor(bool includeInactive = false)
     {
-        using var con = Db.GetConn();
-        con.Open();
+        using var con = Db.GetConn(); con.Open();
 
-        var cmd = new SQLiteCommand("SELECT Id,Name FROM Vendors WHERE IsActive=1", con);
+        var sql = includeInactive ? "SELECT Id,Name,IsActive FROM Vendors" : "SELECT Id,Name FROM Vendors WHERE IsActive=1";
+        var cmd = new SQLiteCommand(sql, con);
         using var r = cmd.ExecuteReader();
 
         Header("SELECT VENDOR");
-
         var list = new List<int>();
         while (r.Read())
         {
             int id = Convert.ToInt32(r["Id"]);
             string name = r["Name"].ToString()!;
             list.Add(id);
-            Console.WriteLine($"{id}. {name}");
+            if (includeInactive)
+                Console.WriteLine($"{id}. {name} Active:{r["IsActive"]}");
+            else
+                Console.WriteLine($"{id}. {name}");
         }
 
         Console.Write("\nChoose Vendor (0 Back): ");
         int v = ReadInt(0, 9999);
-
         return list.Contains(v) ? v : 0;
     }
-
 
 
 
@@ -130,40 +131,46 @@ class Program
         Header("CUSTOMER LOGIN / REGISTER");
 
         Console.Write("Username: ");
-        string user = Console.ReadLine()!.Trim();
+        string user = (Console.ReadLine() ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(user)) { Error("Username required"); return; }
 
         Console.Write("Password: ");
         string pass = ReadPassword();
+        if (string.IsNullOrEmpty(pass)) { Error("Password required"); return; }
+
         string hash = Hash(pass);
 
         using var con = Db.GetConn();
         con.Open();
 
-        // Block login if user has a pending deletion request
-        var cmd = new SQLiteCommand(@"
-        SELECT u.Id, u.Name
-        FROM Users u
-        LEFT JOIN DeletionRequests d ON d.EntityType='User' AND d.EntityId=u.Id AND d.Status='Pending'
-        WHERE u.Username=@u AND u.PasswordHash=@p AND u.Role='Customer' AND u.IsActive=1
-          AND d.Id IS NULL
-    ", con);
-        cmd.Parameters.AddWithValue("@u", user);
-        cmd.Parameters.AddWithValue("@p", hash);
+        // 1. CHECK IF USERNAME EXISTS
+        var checkCmd = new SQLiteCommand(
+            "SELECT Id, Name, PasswordHash FROM Users WHERE Username=@u AND Role='Customer' AND IsActive=1",
+            con);
+        checkCmd.Parameters.AddWithValue("@u", user);
 
-        using var r = cmd.ExecuteReader();
+        using var r = checkCmd.ExecuteReader();
 
         if (r.Read())
         {
+            // USER EXISTS → CHECK PASSWORD
+            string dbHash = Convert.ToString(r["PasswordHash"]) ?? "";
+
+            if (dbHash != hash)
+            {
+                Error("Wrong password");
+                return;
+            }
+
+            // LOGIN SUCCESS
             CurrentUserId = Convert.ToInt32(r["Id"]);
-            CurrentUserName = r["Name"].ToString()!;
+            CurrentUserName = Convert.ToString(r["Name"]) ?? "";
             Success("Login Success");
             CustomerMenu();
             return;
         }
 
-
-
-        // REGISTER (auto-login on success)
+        // 2. USER DOES NOT EXIST → REGISTER
         Console.WriteLine("\nNo account found — registering new customer.");
         Console.Write("Full Name: ");
         string name = ReadName();
@@ -175,22 +182,11 @@ class Program
         ins.Parameters.AddWithValue("@p", hash);
         ins.Parameters.AddWithValue("@n", name);
 
-        try
-        {
-            long newId = (long)ins.ExecuteScalar()!;
-            CurrentUserId = Convert.ToInt32(newId);
-            CurrentUserName = name;
-            Success("Registered & Logged in");
-            CustomerMenu();
-        }
-        catch (System.Data.SQLite.SQLiteException ex)
-        {
-            // UNIQUE constraint violation detection
-            if (ex.ResultCode == SQLiteErrorCode.Constraint || ex.Message.ToLower().Contains("unique"))
-                Error("Username already exists. Try another username.");
-            else
-                Error("Registration failed: " + ex.Message);
-        }
+        long newId = (long)ins.ExecuteScalar()!;
+        CurrentUserId = Convert.ToInt32(newId);
+        CurrentUserName = name;
+        Success("Registered & Logged in");
+        CustomerMenu();
     }
 
     // ---------------- CUSTOMER ----------------
@@ -259,43 +255,49 @@ class Program
 
     static void ShowMenuForCustomer(int vid)
     {
-        using var con = Db.GetConn();
-        con.Open();
-
-        var r = new SQLiteCommand(
-            "SELECT Id,Name,Price,Quantity FROM FoodItems WHERE VendorId=@v AND Quantity>0", con);
-        r.Parameters.AddWithValue("@v", vid);
-
-        using var reader = r.ExecuteReader();
-
-        Header($"MENU - Vendor {vid}");
-
-        var available = new List<int>();
-        while (reader.Read())
+        while (true)
         {
-            int id = Convert.ToInt32(reader["Id"]);
-            string name = Convert.ToString(reader["Name"]) ?? "";
-            double price = Convert.ToDouble(reader["Price"]);
-            int qty = Convert.ToInt32(reader["Quantity"]);
-            available.Add(id);
-            Console.WriteLine($"{id}. {name} ₹{price:F2} Qty:{qty}");
-        }
+            using var con = Db.GetConn();
+            con.Open();
 
-        Console.WriteLine("\n1. Add item to cart");
-        Console.WriteLine("0. Back");
-        int ch = ReadInt(0, 1);
-        if (ch == 1)
-        {
-            Console.Write("Food Id: ");
-            int fid = ReadInt(1, 9999);
-            if (!ItemBelongsToVendor(fid, vid))
+            var r = new SQLiteCommand(
+                "SELECT Id,Name,Price,Quantity FROM FoodItems WHERE VendorId=@v AND Quantity>0", con);
+            r.Parameters.AddWithValue("@v", vid);
+
+            using var reader = r.ExecuteReader();
+
+            Header($"MENU - Vendor {vid}");
+
+            while (reader.Read())
             {
-                Error("Invalid item for vendor");
+                Console.WriteLine($"{reader["Id"]}. {reader["Name"]} ₹{reader["Price"]} Qty:{reader["Quantity"]}");
+            }
+
+            Console.WriteLine("\n1. Add item to cart");
+            Console.WriteLine("2. Switch Vendor");
+            Console.WriteLine("0. Back");
+
+            int ch = ReadInt(0, 2);
+
+            if (ch == 1)
+            {
+                Console.Write("Food Id: ");
+                int fid = ReadInt(1, 9999);
+
+                if (!ItemBelongsToVendor(fid, vid))
+                {
+                    Error("Invalid item for vendor");
+                    continue;
+                }
+
+                Console.Write("Qty: ");
+                int q = ReadInt(1, 999);
+                AddToCart(vid, fid, q);
+            }
+            else
+            {
                 return;
             }
-            Console.Write("Qty: ");
-            int q = ReadInt(1, 999);
-            AddToCart(vid, fid, q);
         }
     }
 
@@ -338,9 +340,11 @@ class Program
 
     static void AddToCart(int vendorId, int foodId, int qty)
     {
+        if (qty <= 0) { Error("Quantity must be > 0"); return; }
+
         using var con = Db.GetConn();
         con.Open();
-        var cmd = new SQLiteCommand("SELECT Name,Price,Quantity FROM FoodItems WHERE Id=@id AND VendorId=@v", con);
+        var cmd = new SQLiteCommand("SELECT Name,Price,Quantity,IsActive FROM FoodItems WHERE Id=@id AND VendorId=@v", con);
         cmd.Parameters.AddWithValue("@id", foodId);
         cmd.Parameters.AddWithValue("@v", vendorId);
         using var rdr = cmd.ExecuteReader();
@@ -350,6 +354,8 @@ class Program
             return;
         }
         int available = Convert.ToInt32(rdr["Quantity"]);
+        int isActive = Convert.ToInt32(rdr["IsActive"]);
+        if (isActive == 0) { Error("Item is no longer available"); return; }
         if (qty > available)
         {
             Error($"Only {available} available");
@@ -358,18 +364,21 @@ class Program
         string name = Convert.ToString(rdr["Name"]) ?? "";
         double price = Convert.ToDouble(rdr["Price"]);
 
-        if (Cart.VendorId == -1) Cart.VendorId = vendorId;
-        if (Cart.VendorId != vendorId)
-        {
-            Error("Cart has items from another vendor. Clear cart first.");
-            return;
-        }
-
-        var existing = Cart.Items.Find(x => x.FoodId == foodId);
+        // add with vendor id
+        var existing = Cart.Items.Find(x => x.FoodId == foodId && x.VendorId == vendorId);
         if (existing != null) existing.Qty += qty;
-        else Cart.Items.Add(new CartItem { FoodId = foodId, Name = name, Price = price, Qty = qty });
+        else Cart.Items.Add(new CartItem { VendorId = vendorId, FoodId = foodId, Name = name, Price = price, Qty = qty });
 
         Success("Added to cart");
+    }
+
+    static string GetVendorName(int vendorId)
+    {
+        using var con = Db.GetConn(); con.Open();
+        var cmd = new SQLiteCommand("SELECT Name FROM Vendors WHERE Id=@id", con);
+        cmd.Parameters.AddWithValue("@id", vendorId);
+        var obj = cmd.ExecuteScalar();
+        return obj == null ? $"Vendor {vendorId}" : Convert.ToString(obj)!;
     }
 
     static void ViewCartMenu()
@@ -385,11 +394,12 @@ class Program
         double total = 0;
         foreach (var it in Cart.Items)
         {
-            Console.WriteLine($"{it.FoodId}. {it.Name} x{it.Qty} @ ₹{it.Price:F2} = ₹{it.Price * it.Qty:F2}");
+            string vname = GetVendorName(it.VendorId);
+            Console.WriteLine($"[V:{it.VendorId} - {vname}] {it.FoodId}. {it.Name} x{it.Qty} @ ₹{it.Price:F2} = ₹{it.Price * it.Qty:F2}");
             total += it.Price * it.Qty;
         }
         Console.WriteLine($"\nTotal: ₹{total:F2}");
-        Console.WriteLine("\n1. Place Order");
+        Console.WriteLine("\n1. Place Order (will create one order per vendor)");
         Console.WriteLine("2. Clear Cart");
         Console.WriteLine("0. Back");
 
@@ -415,60 +425,67 @@ class Program
         using var con = Db.GetConn();
         con.Open();
 
-        using var tx = con.BeginTransaction();
+        // validate all quantities first
+        foreach (var it in Cart.Items)
+            if (it.Qty <= 0) { Error("Invalid cart item quantity."); return; }
+
+        // group by vendor -> create separate order per vendor
+        var groups = Cart.Items.GroupBy(i => i.VendorId);
         try
         {
-            double total = 0;
-            foreach (var it in Cart.Items)
+            foreach (var g in groups)
             {
-                if (it.Qty <= 0) throw new Exception("Invalid cart item quantity.");
-                total += it.Qty * it.Price;
-            }
+                using var tx = con.BeginTransaction();
+                double total = g.Sum(i => i.Price * i.Qty);
 
-            var insOrder = new SQLiteCommand(
-                "INSERT INTO Orders(VendorId,CustomerId,Total,Status,OrderDate) VALUES(@v,@c,@t,'Placed',@d); SELECT last_insert_rowid();",
-                con, tx);
-            insOrder.Parameters.AddWithValue("@v", Cart.VendorId);
-            insOrder.Parameters.AddWithValue("@c", CurrentUserId);
-            insOrder.Parameters.AddWithValue("@t", total);
-            insOrder.Parameters.AddWithValue("@d", DateTime.UtcNow.ToString("o"));
-            long orderId = (long)insOrder.ExecuteScalar()!;
-
-            foreach (var it in Cart.Items)
-            {
-                // verify stock once more
-                var stockCmd = new SQLiteCommand("SELECT Quantity FROM FoodItems WHERE Id=@id", con, tx);
-                stockCmd.Parameters.AddWithValue("@id", it.FoodId);
-                long available = (long)stockCmd.ExecuteScalar()!;
-                if (it.Qty > available)
-                    throw new Exception($"Not enough stock for item {it.Name}. Available: {available}");
-
-                var insItem = new SQLiteCommand(
-                    "INSERT INTO OrderItems(OrderId,FoodItemId,Name,Price,Quantity) VALUES(@o,@f,@n,@p,@q)",
+                var insOrder = new SQLiteCommand(
+                    "INSERT INTO Orders(VendorId,CustomerId,Total,Status,OrderDate) VALUES(@v,@c,@t,'Placed',@d); SELECT last_insert_rowid();",
                     con, tx);
-                insItem.Parameters.AddWithValue("@o", orderId);
-                insItem.Parameters.AddWithValue("@f", it.FoodId);
-                insItem.Parameters.AddWithValue("@n", it.Name);
-                insItem.Parameters.AddWithValue("@p", it.Price);
-                insItem.Parameters.AddWithValue("@q", it.Qty);
-                insItem.ExecuteNonQuery();
+                insOrder.Parameters.AddWithValue("@v", g.Key);
+                insOrder.Parameters.AddWithValue("@c", CurrentUserId);
+                insOrder.Parameters.AddWithValue("@t", total);
+                insOrder.Parameters.AddWithValue("@d", DateTime.UtcNow.ToString("o"));
 
-                // decrement stock safely
-                var upd = new SQLiteCommand("UPDATE FoodItems SET Quantity = Quantity - @q WHERE Id=@id AND Quantity >= @q", con, tx);
-                upd.Parameters.AddWithValue("@q", it.Qty);
-                upd.Parameters.AddWithValue("@id", it.FoodId);
-                int changed = upd.ExecuteNonQuery();
-                if (changed == 0)
-                    throw new Exception($"Failed to decrement stock for {it.Name} (concurrent change).");
+                var orderIdObj = insOrder.ExecuteScalar();
+                if (orderIdObj == null) throw new Exception("Failed to insert order");
+                long orderId = Convert.ToInt64(orderIdObj);
+
+                foreach (var it in g)
+                {
+                    var stockCmd = new SQLiteCommand("SELECT Quantity FROM FoodItems WHERE Id=@id AND IsActive=1", con, tx);
+                    stockCmd.Parameters.AddWithValue("@id", it.FoodId);
+                    var qtyObj = stockCmd.ExecuteScalar();
+                    if (qtyObj == null) throw new Exception($"Item {it.Name} not found");
+                    long available = Convert.ToInt64(qtyObj);
+                    if (it.Qty > available)
+                        throw new Exception($"Not enough stock for item {it.Name}. Available: {available}");
+
+                    var insItem = new SQLiteCommand(
+                        "INSERT INTO OrderItems(OrderId,FoodItemId,Name,Price,Quantity) VALUES(@o,@f,@n,@p,@q)",
+                        con, tx);
+                    insItem.Parameters.AddWithValue("@o", orderId);
+                    insItem.Parameters.AddWithValue("@f", it.FoodId);
+                    insItem.Parameters.AddWithValue("@n", it.Name);
+                    insItem.Parameters.AddWithValue("@p", it.Price);
+                    insItem.Parameters.AddWithValue("@q", it.Qty);
+                    insItem.ExecuteNonQuery();
+
+                    var upd = new SQLiteCommand("UPDATE FoodItems SET Quantity = Quantity - @q WHERE Id=@id AND Quantity >= @q", con, tx);
+                    upd.Parameters.AddWithValue("@q", it.Qty);
+                    upd.Parameters.AddWithValue("@id", it.FoodId);
+                    int changed = upd.ExecuteNonQuery();
+                    if (changed == 0)
+                        throw new Exception($"Failed to decrement stock for {it.Name} (concurrent change).");
+                }
+
+                tx.Commit();
+                Success($"Order placed for Vendor {g.Key} (OrderId: { /* optional: show last order id or just vendor */ ""})");
             }
 
-            tx.Commit();
             Cart.Clear();
-            Success($"Order placed (Id: {orderId})");
         }
         catch (Exception ex)
         {
-            try { tx.Rollback(); } catch { }
             Error("Order failed: " + ex.Message);
         }
     }
@@ -509,7 +526,7 @@ class Program
 
         if (ch == 1)
         {
-            // Approve
+            // Approve (soft-delete)
             if (type == "User" || type == "Customer")
             {
                 var updU = new SQLiteCommand("UPDATE Users SET IsActive=0 WHERE Id=@id", con);
@@ -518,10 +535,10 @@ class Program
             }
             else if (type == "FoodItem")
             {
-                // hard-delete food item on approval (or mark inactive - choose as you prefer)
-                var del = new SQLiteCommand("DELETE FROM FoodItems WHERE Id=@id", con);
-                del.Parameters.AddWithValue("@id", eid);
-                del.ExecuteNonQuery();
+                // soft-delete food item
+                var updF = new SQLiteCommand("UPDATE FoodItems SET IsActive=0 WHERE Id=@id", con);
+                updF.Parameters.AddWithValue("@id", eid);
+                updF.ExecuteNonQuery();
             }
 
             var updReq = new SQLiteCommand("UPDATE DeletionRequests SET Status='Approved', ProcessedDate=@d WHERE Id=@i", con);
@@ -531,6 +548,7 @@ class Program
 
             Success("Request approved and processed");
         }
+
         else
         {
             var updReq = new SQLiteCommand("UPDATE DeletionRequests SET Status='Rejected', ProcessedDate=@d WHERE Id=@i", con);

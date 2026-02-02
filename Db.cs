@@ -14,10 +14,10 @@ public static class Db
         using var con = GetConn();
         con.Open();
 
-        // ---- ADD THESE 2 LINES ----
-        new SQLiteCommand("PRAGMA journal_mode=WAL;", con).ExecuteNonQuery();
-        new SQLiteCommand("PRAGMA busy_timeout=3000;", con).ExecuteNonQuery();
-        // ----------------------------
+        // PRAGMAs: WAL, busy timeout, foreign keys
+        new SQLiteCommand("PRAGMA journal_mode = WAL;", con).ExecuteNonQuery();
+        new SQLiteCommand("PRAGMA busy_timeout = 3000;", con).ExecuteNonQuery();
+        new SQLiteCommand("PRAGMA foreign_keys = ON;", con).ExecuteNonQuery();
 
         string sql = @"
         CREATE TABLE IF NOT EXISTS Vendors(
@@ -32,6 +32,7 @@ public static class Db
             Name TEXT,
             Price REAL,
             Quantity INTEGER,
+            IsActive INTEGER DEFAULT 1,
             FOREIGN KEY(VendorId) REFERENCES Vendors(Id)
         );
 
