@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 public class Vendor
 {
     public int Id { get; set; }
@@ -18,6 +20,7 @@ public class User
 {
     public int Id { get; set; }
     public string Name { get; set; } = "";
+    public string Mobile { get; set; } = "";
     public string Role { get; set; } = ""; // Customer, Vendor, Admin
     public bool IsActive { get; set; } = true;
 }
@@ -26,9 +29,20 @@ public class Order
 {
     public int Id { get; set; }
     public int VendorId { get; set; }
+    public int CustomerId { get; set; }
     public double Total { get; set; }
     public string Status { get; set; } = "Placed";
     public string OrderDate { get; set; } = "";
+}
+
+public class OrderItem
+{
+    public int Id { get; set; }
+    public int OrderId { get; set; }
+    public int FoodItemId { get; set; }
+    public string Name { get; set; } = "";
+    public double Price { get; set; }
+    public int Quantity { get; set; }
 }
 
 public class DeletionRequest

@@ -15,7 +15,6 @@ public static class Db
         con.Open();
 
         string sql = @"
-
         CREATE TABLE IF NOT EXISTS Vendors(
             Id INTEGER PRIMARY KEY AUTOINCREMENT,
             Name TEXT NOT NULL,
@@ -34,6 +33,7 @@ public static class Db
         CREATE TABLE IF NOT EXISTS Users(
             Id INTEGER PRIMARY KEY AUTOINCREMENT,
             Name TEXT,
+            Mobile TEXT,
             Role TEXT,
             IsActive INTEGER DEFAULT 1
         );
@@ -41,10 +41,23 @@ public static class Db
         CREATE TABLE IF NOT EXISTS Orders(
             Id INTEGER PRIMARY KEY AUTOINCREMENT,
             VendorId INTEGER,
+            CustomerId INTEGER,
             Total REAL,
             Status TEXT,
             OrderDate TEXT,
-            FOREIGN KEY(VendorId) REFERENCES Vendors(Id)
+            FOREIGN KEY(VendorId) REFERENCES Vendors(Id),
+            FOREIGN KEY(CustomerId) REFERENCES Users(Id)
+        );
+
+        CREATE TABLE IF NOT EXISTS OrderItems(
+            Id INTEGER PRIMARY KEY AUTOINCREMENT,
+            OrderId INTEGER,
+            FoodItemId INTEGER,
+            Name TEXT,
+            Price REAL,
+            Quantity INTEGER,
+            FOREIGN KEY(OrderId) REFERENCES Orders(Id),
+            FOREIGN KEY(FoodItemId) REFERENCES FoodItems(Id)
         );
 
         CREATE TABLE IF NOT EXISTS DeletionRequests(
