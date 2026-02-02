@@ -651,7 +651,8 @@ class Program
             Console.WriteLine("6. Process Deletion Request");
             Console.WriteLine("0. Back");
 
-            int ch = ReadInt(0, 5);
+            // allow 0..6
+            int ch = ReadInt(0, 6);
 
             if (ch == 1) ShowVendors();
             else if (ch == 2) ToggleVendor();
@@ -700,13 +701,14 @@ class Program
         using var con = Db.GetConn();
         con.Open();
 
-        var r = new SQLiteCommand("SELECT Id,Name,Mobile,IsActive FROM Users WHERE Role='Customer'", con)
-            .ExecuteReader();
+        // select Username instead of Mobile (Mobile column removed)
+        var cmd = new SQLiteCommand("SELECT Id,Name,Username,IsActive FROM Users WHERE Role='Customer'", con);
+        using var r = cmd.ExecuteReader();
 
         Header("CUSTOMERS");
 
         while (r.Read())
-            Console.WriteLine($"{r["Id"]} {r["Name"]} {r["Mobile"]} Active:{r["IsActive"]}");
+            Console.WriteLine($"{r["Id"]} {r["Name"]} {r["Username"]} Active:{r["IsActive"]}");
 
         Console.ReadKey();
     }
