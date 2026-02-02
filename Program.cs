@@ -1,6 +1,9 @@
 ﻿using System;
 using System.Data.SQLite;
 using System.Collections.Generic;
+using System.Security.Cryptography;
+using System.Text;
+
 
 // Entry point
 class Program
@@ -38,43 +41,86 @@ class Program
     }
 
     // ---------------- AUTH ----------------
+    static string ReadPassword()
+    {
+        string pass = "";
+        ConsoleKeyInfo key;
+
+        while ((key = Console.ReadKey(true)).Key != ConsoleKey.Enter)
+        {
+            if (key.Key == ConsoleKey.Backspace && pass.Length > 0)
+            {
+                pass = pass[..^1];
+                Console.Write("\b \b");
+            }
+            else if (!char.IsControl(key.KeyChar))
+            {
+                pass += key.KeyChar;
+                Console.Write("*");
+            }
+        }
+        Console.WriteLine();
+        return pass;
+    }
+
+    static string Hash(string input)
+    {
+        using var sha = SHA256.Create();
+        var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(input));
+        return Convert.ToBase64String(bytes);
+    }
     static void CustomerAuth()
     {
-        Header("CUSTOMER LOGIN / REGISTER");
+        Header("CUSTOMER LOGIN");
 
-        Console.Write("Mobile: ");
-        string mob = Console.ReadLine()!.Trim();
+        Console.Write("Username: ");
+        string user = Console.ReadLine()!.Trim();
+
+        Console.Write("Password: ");
+        string pass = ReadPassword();
+        string hash = Hash(pass);
 
         using var con = Db.GetConn();
         con.Open();
 
         var cmd = new SQLiteCommand(
-            "SELECT Id, Name FROM Users WHERE Mobile=@m AND Role='Customer' AND IsActive=1", con);
-        cmd.Parameters.AddWithValue("@m", mob);
+            "SELECT Id,Name FROM Users WHERE Username=@u AND PasswordHash=@p AND Role='Customer' AND IsActive=1",
+            con);
+        cmd.Parameters.AddWithValue("@u", user);
+        cmd.Parameters.AddWithValue("@p", hash);
 
-        var reader = cmd.ExecuteReader();
-        if (reader.Read())
+        using var r = cmd.ExecuteReader();
+
+        if (r.Read())
         {
-            CurrentUserId = Convert.ToInt32(reader["Id"]);
-            CurrentUserName = Convert.ToString(reader["Name"]) ?? "";
-            Success($"Login Success. Welcome {CurrentUserName}");
+            CurrentUserId = Convert.ToInt32(r["Id"]);
+            CurrentUserName = r["Name"].ToString()!;
+            Success("Login Success");
             CustomerMenu();
             return;
         }
 
-        Console.Write("New User Name: ");
+        // REGISTER
+        Console.WriteLine("\nNew User Registration");
+        Console.Write("Full Name: ");
         string name = ReadName();
 
         var ins = new SQLiteCommand(
-            "INSERT INTO Users(Name,Mobile,Role,IsActive) VALUES(@n,@m,'Customer',1); SELECT last_insert_rowid();", con);
+            "INSERT INTO Users(Username,PasswordHash,Name,Role,IsActive) VALUES(@u,@p,@n,'Customer',1)",
+            con);
+        ins.Parameters.AddWithValue("@u", user);
+        ins.Parameters.AddWithValue("@p", hash);
         ins.Parameters.AddWithValue("@n", name);
-        ins.Parameters.AddWithValue("@m", mob);
-        long newId = (long)ins.ExecuteScalar()!;
 
-        CurrentUserId = Convert.ToInt32(newId);
-        CurrentUserName = name;
-        Success("Registered & Logged in");
-        CustomerMenu();
+        try
+        {
+            ins.ExecuteNonQuery();
+            Success("Registered. Login again.");
+        }
+        catch
+        {
+            Error("Username already exists.");
+        }
     }
 
     // ---------------- CUSTOMER ----------------
@@ -659,48 +705,57 @@ class Program
     }
 
     // ---------------- SEED ----------------
+
     static void Seed()
     {
         using var con = Db.GetConn();
         con.Open();
 
-        // seed vendors & foods if empty
+        // ---------- VENDORS ----------
         var c1 = new SQLiteCommand("SELECT COUNT(1) FROM Vendors", con);
         long vcount = (long)c1.ExecuteScalar()!;
         if (vcount == 0)
         {
             var cmd = new SQLiteCommand(@"
-    INSERT INTO Vendors(Name,IsActive) VALUES
-    ('Fresh Bites',1),
-    ('Snack Hub',1),
-    ('South Express',1);", con);
+        INSERT INTO Vendors(Name,IsActive) VALUES
+        ('Fresh Bites',1),
+        ('Snack Hub',1),
+        ('South Express',1);", con);
             cmd.ExecuteNonQuery();
         }
 
+        // ---------- FOOD ITEMS ----------
         var c2 = new SQLiteCommand("SELECT COUNT(1) FROM FoodItems", con);
         long fcount = (long)c2.ExecuteScalar()!;
         if (fcount == 0)
         {
             var cmd2 = new SQLiteCommand(@"
-    INSERT INTO FoodItems(VendorId,Name,Price,Quantity) VALUES
-    (1,'Burger',80,20),
-    (1,'Sandwich',50,30),
-    (2,'Samosa',20,100),
-    (2,'Tea',15,200),
-    (3,'Dosa',60,40),
-    (3,'Idli',40,50);", con);
-            cmd2.ExecuteNonQuery();
-        }
+            INSERT INTO FoodItems(VendorId,Name,Price,Quantity) VALUES
+            (1,'Burger',80,20),
+            (1,'Sandwich',50,30),
+            (2,'Samosa',20,100),
+            (2,'Tea',15,200),
+            (3,'Dosa',60,40),
+            (3,'Idli',40,50);", con);
+                cmd2.ExecuteNonQuery();
+            }
 
-        // sample admin user
+        // ---------- ADMIN USER ----------
         var c3 = new SQLiteCommand("SELECT COUNT(1) FROM Users WHERE Role='Admin'", con);
         long acount = (long)c3.ExecuteScalar()!;
         if (acount == 0)
         {
-            var ad = new SQLiteCommand("INSERT INTO Users(Name,Mobile,Role,IsActive) VALUES('Admin','0000000000','Admin',1)", con);
+            string hash = Hash("admin123"); // default password
+
+            var ad = new SQLiteCommand(@"
+        INSERT INTO Users(Username,PasswordHash,Name,Role,IsActive)
+        VALUES('admin',@p,'Administrator','Admin',1);", con);
+
+            ad.Parameters.AddWithValue("@p", hash);
             ad.ExecuteNonQuery();
         }
 
-        Success("Seeded Vendors + Food + Admin (if empty)");
+        Success("Seeded Vendors + Food + Admin (admin/admin123)");
     }
+
 }

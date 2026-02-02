@@ -32,11 +32,13 @@ public static class Db
 
         CREATE TABLE IF NOT EXISTS Users(
             Id INTEGER PRIMARY KEY AUTOINCREMENT,
+            Username TEXT UNIQUE,
+            PasswordHash TEXT,
             Name TEXT,
-            Mobile TEXT,
             Role TEXT,
             IsActive INTEGER DEFAULT 1
         );
+
 
         CREATE TABLE IF NOT EXISTS Orders(
             Id INTEGER PRIMARY KEY AUTOINCREMENT,
