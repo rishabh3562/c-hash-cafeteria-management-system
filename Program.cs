@@ -145,16 +145,23 @@ class Program
 
         // 1. CHECK IF USERNAME EXISTS
         var checkCmd = new SQLiteCommand(
-            "SELECT Id, Name, PasswordHash FROM Users WHERE Username=@u AND Role='Customer' AND IsActive=1",
-            con);
+     "SELECT Id, Name, PasswordHash, IsActive FROM Users WHERE Username=@u AND Role='Customer'",
+     con);
+
         checkCmd.Parameters.AddWithValue("@u", user);
 
         using var r = checkCmd.ExecuteReader();
 
         if (r.Read())
         {
-            // USER EXISTS → CHECK PASSWORD
+            int isActive = Convert.ToInt32(r["IsActive"]);
             string dbHash = Convert.ToString(r["PasswordHash"]) ?? "";
+
+            if (isActive == 0)
+            {
+                Error("Account is deactivated. Contact admin or create new username.");
+                return;
+            }
 
             if (dbHash != hash)
             {
@@ -162,7 +169,6 @@ class Program
                 return;
             }
 
-            // LOGIN SUCCESS
             CurrentUserId = Convert.ToInt32(r["Id"]);
             CurrentUserName = Convert.ToString(r["Name"]) ?? "";
             Success("Login Success");
@@ -182,11 +188,19 @@ class Program
         ins.Parameters.AddWithValue("@p", hash);
         ins.Parameters.AddWithValue("@n", name);
 
-        long newId = (long)ins.ExecuteScalar()!;
-        CurrentUserId = Convert.ToInt32(newId);
-        CurrentUserName = name;
-        Success("Registered & Logged in");
-        CustomerMenu();
+        try
+        {
+            long newId = (long)ins.ExecuteScalar()!;
+            CurrentUserId = Convert.ToInt32(newId);
+            CurrentUserName = name;
+            Success("Registered & Logged in");
+            CustomerMenu();
+        }
+        catch (SQLiteException)
+        {
+            Error("Username already exists but account is disabled. Contact admin.");
+        }
+
     }
 
     // ---------------- CUSTOMER ----------------
@@ -520,6 +534,7 @@ class Program
         Console.WriteLine($"Request: {type} {eid}");
         Console.WriteLine("1. Approve (soft-delete)");
         Console.WriteLine("2. Reject");
+        Console.WriteLine("3. HARD DELETE");
         Console.WriteLine("0. Back");
         int ch = ReadInt(0, 2);
         if (ch == 0) return;
@@ -547,6 +562,15 @@ class Program
             updReq.ExecuteNonQuery();
 
             Success("Request approved and processed");
+        }
+        else if (ch == 3)
+        {
+            if (type == "User" || type == "Customer")
+            {
+                new SQLiteCommand("DELETE FROM Users WHERE Id=@id", con)
+                { Parameters = { new SQLiteParameter("@id", eid) } }
+                    .ExecuteNonQuery();
+            }
         }
 
         else
@@ -796,7 +820,8 @@ class Program
     {
         // Console.Write("Vendor Id: ");
         // int id = ReadInt(1, 99999);
-        int id = SelectVendor();
+        int id = SelectVendor(true);
+
         if (id == 0) return;
 
         using var con = Db.GetConn();
