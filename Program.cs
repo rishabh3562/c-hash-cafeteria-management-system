@@ -71,7 +71,7 @@ class Program
     }
     static void CustomerAuth()
     {
-        Header("CUSTOMER LOGIN");
+        Header("CUSTOMER LOGIN / REGISTER");
 
         Console.Write("Username: ");
         string user = Console.ReadLine()!.Trim();
@@ -83,9 +83,14 @@ class Program
         using var con = Db.GetConn();
         con.Open();
 
-        var cmd = new SQLiteCommand(
-            "SELECT Id,Name FROM Users WHERE Username=@u AND PasswordHash=@p AND Role='Customer' AND IsActive=1",
-            con);
+        // Block login if user has a pending deletion request
+        var cmd = new SQLiteCommand(@"
+        SELECT u.Id, u.Name
+        FROM Users u
+        LEFT JOIN DeletionRequests d ON d.EntityType='User' AND d.EntityId=u.Id AND d.Status='Pending'
+        WHERE u.Username=@u AND u.PasswordHash=@p AND u.Role='Customer' AND u.IsActive=1
+          AND d.Id IS NULL
+    ", con);
         cmd.Parameters.AddWithValue("@u", user);
         cmd.Parameters.AddWithValue("@p", hash);
 
@@ -100,13 +105,13 @@ class Program
             return;
         }
 
-        // REGISTER
-        Console.WriteLine("\nNew User Registration");
+        // REGISTER (auto-login on success)
+        Console.WriteLine("\nNo account found — registering new customer.");
         Console.Write("Full Name: ");
         string name = ReadName();
 
         var ins = new SQLiteCommand(
-            "INSERT INTO Users(Username,PasswordHash,Name,Role,IsActive) VALUES(@u,@p,@n,'Customer',1)",
+            "INSERT INTO Users(Username,PasswordHash,Name,Role,IsActive) VALUES(@u,@p,@n,'Customer',1); SELECT last_insert_rowid();",
             con);
         ins.Parameters.AddWithValue("@u", user);
         ins.Parameters.AddWithValue("@p", hash);
@@ -114,12 +119,19 @@ class Program
 
         try
         {
-            ins.ExecuteNonQuery();
-            Success("Registered. Login again.");
+            long newId = (long)ins.ExecuteScalar()!;
+            CurrentUserId = Convert.ToInt32(newId);
+            CurrentUserName = name;
+            Success("Registered & Logged in");
+            CustomerMenu();
         }
-        catch
+        catch (System.Data.SQLite.SQLiteException ex)
         {
-            Error("Username already exists.");
+            // UNIQUE constraint violation detection
+            if (ex.ResultCode == SQLiteErrorCode.Constraint || ex.Message.ToLower().Contains("unique"))
+                Error("Username already exists. Try another username.");
+            else
+                Error("Registration failed: " + ex.Message);
         }
     }
 
@@ -304,11 +316,18 @@ class Program
 
     static void PlaceOrder()
     {
+        if (CurrentUserId <= 0)
+        {
+            Error("You must be logged in to place an order.");
+            return;
+        }
+
         if (Cart.Items.Count == 0)
         {
             Error("Cart empty");
             return;
         }
+
         using var con = Db.GetConn();
         con.Open();
 
@@ -316,7 +335,11 @@ class Program
         try
         {
             double total = 0;
-            foreach (var it in Cart.Items) total += it.Qty * it.Price;
+            foreach (var it in Cart.Items)
+            {
+                if (it.Qty <= 0) throw new Exception("Invalid cart item quantity.");
+                total += it.Qty * it.Price;
+            }
 
             var insOrder = new SQLiteCommand(
                 "INSERT INTO Orders(VendorId,CustomerId,Total,Status,OrderDate) VALUES(@v,@c,@t,'Placed',@d); SELECT last_insert_rowid();",
@@ -329,6 +352,13 @@ class Program
 
             foreach (var it in Cart.Items)
             {
+                // verify stock once more
+                var stockCmd = new SQLiteCommand("SELECT Quantity FROM FoodItems WHERE Id=@id", con, tx);
+                stockCmd.Parameters.AddWithValue("@id", it.FoodId);
+                long available = (long)stockCmd.ExecuteScalar()!;
+                if (it.Qty > available)
+                    throw new Exception($"Not enough stock for item {it.Name}. Available: {available}");
+
                 var insItem = new SQLiteCommand(
                     "INSERT INTO OrderItems(OrderId,FoodItemId,Name,Price,Quantity) VALUES(@o,@f,@n,@p,@q)",
                     con, tx);
@@ -339,11 +369,13 @@ class Program
                 insItem.Parameters.AddWithValue("@q", it.Qty);
                 insItem.ExecuteNonQuery();
 
-                // decrement stock
-                var upd = new SQLiteCommand("UPDATE FoodItems SET Quantity = Quantity - @q WHERE Id=@id", con, tx);
+                // decrement stock safely
+                var upd = new SQLiteCommand("UPDATE FoodItems SET Quantity = Quantity - @q WHERE Id=@id AND Quantity >= @q", con, tx);
                 upd.Parameters.AddWithValue("@q", it.Qty);
                 upd.Parameters.AddWithValue("@id", it.FoodId);
-                upd.ExecuteNonQuery();
+                int changed = upd.ExecuteNonQuery();
+                if (changed == 0)
+                    throw new Exception($"Failed to decrement stock for {it.Name} (concurrent change).");
             }
 
             tx.Commit();
@@ -352,8 +384,76 @@ class Program
         }
         catch (Exception ex)
         {
-            tx.Rollback();
+            try { tx.Rollback(); } catch { }
             Error("Order failed: " + ex.Message);
+        }
+    }
+    static void ProcessDeletionRequest()
+    {
+        Header("PROCESS DELETION REQUEST");
+        Console.Write("Request Id: ");
+        int rid = ReadInt(1, 999999);
+
+        using var con = Db.GetConn();
+        con.Open();
+
+        var cmd = new SQLiteCommand("SELECT EntityType,EntityId,Status FROM DeletionRequests WHERE Id=@i", con);
+        cmd.Parameters.AddWithValue("@i", rid);
+        using var r = cmd.ExecuteReader();
+        if (!r.Read())
+        {
+            Error("Request not found");
+            return;
+        }
+
+        string status = Convert.ToString(r["Status"]) ?? "";
+        if (status != "Pending")
+        {
+            Error("Request already processed");
+            return;
+        }
+
+        string type = Convert.ToString(r["EntityType"]) ?? "";
+        int eid = Convert.ToInt32(r["EntityId"]);
+
+        Console.WriteLine($"Request: {type} {eid}");
+        Console.WriteLine("1. Approve (soft-delete)");
+        Console.WriteLine("2. Reject");
+        Console.WriteLine("0. Back");
+        int ch = ReadInt(0, 2);
+        if (ch == 0) return;
+
+        if (ch == 1)
+        {
+            // Approve
+            if (type == "User" || type == "Customer")
+            {
+                var updU = new SQLiteCommand("UPDATE Users SET IsActive=0 WHERE Id=@id", con);
+                updU.Parameters.AddWithValue("@id", eid);
+                updU.ExecuteNonQuery();
+            }
+            else if (type == "FoodItem")
+            {
+                // hard-delete food item on approval (or mark inactive - choose as you prefer)
+                var del = new SQLiteCommand("DELETE FROM FoodItems WHERE Id=@id", con);
+                del.Parameters.AddWithValue("@id", eid);
+                del.ExecuteNonQuery();
+            }
+
+            var updReq = new SQLiteCommand("UPDATE DeletionRequests SET Status='Approved', ProcessedDate=@d WHERE Id=@i", con);
+            updReq.Parameters.AddWithValue("@d", DateTime.UtcNow.ToString("o"));
+            updReq.Parameters.AddWithValue("@i", rid);
+            updReq.ExecuteNonQuery();
+
+            Success("Request approved and processed");
+        }
+        else
+        {
+            var updReq = new SQLiteCommand("UPDATE DeletionRequests SET Status='Rejected', ProcessedDate=@d WHERE Id=@i", con);
+            updReq.Parameters.AddWithValue("@d", DateTime.UtcNow.ToString("o"));
+            updReq.Parameters.AddWithValue("@i", rid);
+            updReq.ExecuteNonQuery();
+            Success("Request rejected");
         }
     }
 
@@ -498,6 +598,15 @@ class Program
         using var con = Db.GetConn();
         con.Open();
 
+        // check current qty and vendor match
+        var chk = new SQLiteCommand("SELECT Quantity FROM FoodItems WHERE Id=@id AND VendorId=@v", con);
+        chk.Parameters.AddWithValue("@id", id);
+        chk.Parameters.AddWithValue("@v", vid);
+        var res = chk.ExecuteScalar();
+        if (res == null) { Error("No matching item"); return; }
+        int cur = Convert.ToInt32(res);
+        if (cur + add < 0) { Error($"Cannot reduce below 0 (current: {cur})"); return; }
+
         var cmd = new SQLiteCommand("UPDATE FoodItems SET Quantity = Quantity + @a WHERE Id=@id AND VendorId=@v", con);
         cmd.Parameters.AddWithValue("@a", add);
         cmd.Parameters.AddWithValue("@id", id);
@@ -539,6 +648,7 @@ class Program
             Console.WriteLine("3. View Customers");
             Console.WriteLine("4. Disable Customer");
             Console.WriteLine("5. View Deletion Requests");
+            Console.WriteLine("6. Process Deletion Request");
             Console.WriteLine("0. Back");
 
             int ch = ReadInt(0, 5);
@@ -548,6 +658,7 @@ class Program
             else if (ch == 3) ShowCustomers();
             else if (ch == 4) DisableCustomer();
             else if (ch == 5) ShowDeletionRequests();
+            else if (ch == 6) ProcessDeletionRequest();
             else return;
         }
     }
@@ -619,13 +730,14 @@ class Program
     {
         using var con = Db.GetConn();
         con.Open();
-        var cmd = new SQLiteCommand("SELECT Id,EntityType,EntityId,RequestedBy,Status,RequestDate FROM DeletionRequests ORDER BY Id DESC", con);
+        var cmd = new SQLiteCommand("SELECT Id,EntityType,EntityId,RequestedBy,Status,RequestDate,ProcessedDate FROM DeletionRequests ORDER BY Id DESC", con);
         using var r = cmd.ExecuteReader();
         Header("DELETION REQUESTS");
         while (r.Read())
-            Console.WriteLine($"{r["Id"]} | {r["EntityType"]}:{r["EntityId"]} | By:{r["RequestedBy"]} | {r["Status"]} | {r["RequestDate"]}");
+            Console.WriteLine($"{r["Id"]} | {r["EntityType"]}:{r["EntityId"]} | By:{r["RequestedBy"]} | {r["Status"]} | {r["RequestDate"]} | Processed:{r["ProcessedDate"]}");
         Console.ReadKey();
     }
+
 
     // ---------------- REQUESTS ----------------
     static void RequestDeletion(string type, int id)
@@ -737,8 +849,8 @@ class Program
             (2,'Tea',15,200),
             (3,'Dosa',60,40),
             (3,'Idli',40,50);", con);
-                cmd2.ExecuteNonQuery();
-            }
+            cmd2.ExecuteNonQuery();
+        }
 
         // ---------- ADMIN USER ----------
         var c3 = new SQLiteCommand("SELECT COUNT(1) FROM Users WHERE Role='Admin'", con);

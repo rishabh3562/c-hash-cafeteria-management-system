@@ -14,6 +14,11 @@ public static class Db
         using var con = GetConn();
         con.Open();
 
+        // ---- ADD THESE 2 LINES ----
+        new SQLiteCommand("PRAGMA journal_mode=WAL;", con).ExecuteNonQuery();
+        new SQLiteCommand("PRAGMA busy_timeout=3000;", con).ExecuteNonQuery();
+        // ----------------------------
+
         string sql = @"
         CREATE TABLE IF NOT EXISTS Vendors(
             Id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,7 +43,6 @@ public static class Db
             Role TEXT,
             IsActive INTEGER DEFAULT 1
         );
-
 
         CREATE TABLE IF NOT EXISTS Orders(
             Id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,7 +72,8 @@ public static class Db
             EntityId INTEGER,
             RequestedBy TEXT,
             Status TEXT,
-            RequestDate TEXT
+            RequestDate TEXT,
+            ProcessedDate TEXT
         );
         ";
 
