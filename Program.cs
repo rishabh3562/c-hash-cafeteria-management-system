@@ -35,7 +35,8 @@ class Program
 
             if (ch == 1) { CustomerAuth(); }
             else if (ch == 2) VendorLogin();
-            else if (ch == 3) AdminMenu();
+            else if (ch == 3) AdminLogin();
+
             else if (ch == 99 && SEED_MODE) { Seed(); }
             else break;
         }
@@ -291,7 +292,8 @@ class Program
             Console.WriteLine("2. Switch Vendor");
             Console.WriteLine("0. Back");
 
-            int ch = ReadInt(0, 2);
+            int ch = ReadInt(0, 3);
+
 
             if (ch == 1)
             {
@@ -493,7 +495,9 @@ class Program
                 }
 
                 tx.Commit();
-                Success($"Order placed for Vendor {g.Key} (OrderId: { /* optional: show last order id or just vendor */ ""})");
+                // Success($"Order placed for Vendor {g.Key} (OrderId: { /* optional: show last order id or just vendor */ ""})");
+                Success($"Order placed for Vendor {g.Key} (OrderId: {orderId})");
+
             }
 
             Cart.Clear();
@@ -571,6 +575,13 @@ class Program
                 { Parameters = { new SQLiteParameter("@id", eid) } }
                     .ExecuteNonQuery();
             }
+            else if (type == "FoodItem")
+            {
+                new SQLiteCommand("DELETE FROM FoodItems WHERE Id=@id", con)
+                { Parameters = { new SQLiteParameter("@id", eid) } }
+                .ExecuteNonQuery();
+            }
+
         }
 
         else
@@ -602,6 +613,37 @@ class Program
                 Console.WriteLine($"   - {itR["Name"]} x{itR["Quantity"]} @ ₹{Convert.ToDouble(itR["Price"]):F2}");
         }
         Console.ReadKey();
+    }
+    static void AdminLogin()
+    {
+        Header("ADMIN LOGIN");
+
+        Console.Write("Username: ");
+        string u = Console.ReadLine() ?? "";
+
+        Console.Write("Password: ");
+        string p = ReadPassword();
+        string h = Hash(p);
+
+        using var con = Db.GetConn();
+        con.Open();
+
+        var cmd = new SQLiteCommand(
+            "SELECT Id,Name FROM Users WHERE Username=@u AND PasswordHash=@p AND Role='Admin' AND IsActive=1",
+            con);
+
+        cmd.Parameters.AddWithValue("@u", u);
+        cmd.Parameters.AddWithValue("@p", h);
+
+        using var r = cmd.ExecuteReader();
+
+        if (!r.Read())
+        {
+            Error("Invalid Admin Credentials");
+            return;
+        }
+
+        AdminMenu();
     }
 
     // ---------------- VENDOR ----------------
