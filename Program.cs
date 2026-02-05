@@ -43,34 +43,27 @@ class Program
     }
 
     // ---------------- AUTH ----------------
+
     static string ReadPassword()
     {
-        string pass = "";
-        ConsoleKeyInfo key;
-
-        while ((key = Console.ReadKey(true)).Key != ConsoleKey.Enter)
-        {
-            if (key.Key == ConsoleKey.Backspace && pass.Length > 0)
-            {
-                pass = pass[..^1];
-                Console.Write("\b \b");
-            }
-            else if (!char.IsControl(key.KeyChar))
-            {
-                pass += key.KeyChar;
-                Console.Write("*");
-            }
-        }
-        Console.WriteLine();
-        return pass;
+        return Console.ReadLine() ?? "";
     }
-
     static string Hash(string input)
     {
         using var sha = SHA256.Create();
         var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(input));
         return Convert.ToBase64String(bytes);
     }
+    static bool IsValidPassword(string p)
+    {
+        if (p.Length < 8) return false;
+        if (!p.Any(char.IsUpper)) return false;
+        if (!p.Any(char.IsLower)) return false;
+        if (!p.Any(char.IsDigit)) return false;
+        if (!p.Any(ch => !char.IsLetterOrDigit(ch))) return false;
+        return true;
+    }
+
     static int SelectVendor(bool includeInactive = false)
     {
         using var con = Db.GetConn(); con.Open();
@@ -136,9 +129,17 @@ class Program
         if (string.IsNullOrWhiteSpace(user)) { Error("Username required"); return; }
 
         Console.Write("Password: ");
-        string pass = ReadPassword();
-        if (string.IsNullOrEmpty(pass)) { Error("Password required"); return; }
+        // string pass = ReadPassword();
+        // if (string.IsNullOrEmpty(pass)) { Error("Password required"); return; }
 
+        //new
+        string pass = ReadPassword();
+        if (!IsValidPassword(pass))
+        {
+            Error("Password must be 8 chars with Upper, Lower, Number, Special");
+            return;
+        }
+        else if (string.IsNullOrEmpty(pass)) { Error("Password required"); return; }
         string hash = Hash(pass);
 
         using var con = Db.GetConn();
@@ -310,10 +311,18 @@ class Program
                 int q = ReadInt(1, 999);
                 AddToCart(vid, fid, q);
             }
+
+            // 2 is return back to vendor list
+            else if (ch == 2)
+            {
+                BrowseVendorsForCustomer();
+                return;
+            }
             else
             {
                 return;
             }
+
         }
     }
 
@@ -377,6 +386,13 @@ class Program
             Error($"Only {available} available");
             return;
         }
+
+        if (available == 0)
+        {
+            Error("Out of stock");
+            return;
+        }
+
         string name = Convert.ToString(rdr["Name"]) ?? "";
         double price = Convert.ToDouble(rdr["Price"]);
 
@@ -495,7 +511,6 @@ class Program
                 }
 
                 tx.Commit();
-                // Success($"Order placed for Vendor {g.Key} (OrderId: { /* optional: show last order id or just vendor */ ""})");
                 Success($"Order placed for Vendor {g.Key} (OrderId: {orderId})");
 
             }
@@ -540,7 +555,7 @@ class Program
         Console.WriteLine("2. Reject");
         Console.WriteLine("3. HARD DELETE");
         Console.WriteLine("0. Back");
-        int ch = ReadInt(0, 2);
+        int ch = ReadInt(0, 3);
         if (ch == 0) return;
 
         if (ch == 1)
@@ -574,6 +589,7 @@ class Program
                 new SQLiteCommand("DELETE FROM Users WHERE Id=@id", con)
                 { Parameters = { new SQLiteParameter("@id", eid) } }
                     .ExecuteNonQuery();
+                Success("Request approved and processed");
             }
             else if (type == "FoodItem")
             {
@@ -647,23 +663,27 @@ class Program
     }
 
     // ---------------- VENDOR ----------------
+  
+
+    // ----------- new vendor login with common pass --- -----
     static void VendorLogin()
     {
         Header("VENDOR LOGIN");
-        // Console.Write("VendorId: ");
-        // int vid = ReadInt(1, 9999);
+
         int vid = SelectVendor();
         if (vid == 0) return;
 
-        using var con = Db.GetConn();
-        con.Open();
-        var cmd = new SQLiteCommand("SELECT COUNT(1) FROM Vendors WHERE Id=@id", con);
-        cmd.Parameters.AddWithValue("@id", vid);
-        long cnt = (long)cmd.ExecuteScalar()!;
-        if (cnt == 0) { Error("Vendor not found"); return; }
+        Console.Write("Password: ");
+        string p = ReadPassword();
+        if (p != "vendor@123")
+        {
+            Error("Wrong Vendor Password");
+            return;
+        }
 
         VendorMenu(vid);
     }
+
 
     static void VendorMenu(int vid)
     {
@@ -687,8 +707,6 @@ class Program
             else if (ch == 4) UpdateFoodQty(vid);
             else if (ch == 5)
             {
-                // Console.Write("Food Id: ");
-                // RequestDeletion("FoodItem", ReadInt(1, 9999));
                 int id = SelectFoodItem(vid);
                 if (id == 0) return;
                 RequestDeletion("FoodItem", id);
@@ -714,7 +732,13 @@ class Program
 
         while (reader.Read())
         {
-            Console.WriteLine($"{reader["Id"]}. {reader["Name"]} ₹{Convert.ToDouble(reader["Price"]):F2} Qty:{reader["Quantity"]}");
+            int q = Convert.ToInt32(reader["Quantity"]);
+            if (q == 0)
+                Console.ForegroundColor = ConsoleColor.Red;
+
+            Console.WriteLine($"{reader["Id"]}. {reader["Name"]} ₹{Convert.ToDouble(reader["Price"]):F2} Qty:{q}");
+
+            Console.ResetColor();
         }
 
         Console.ReadKey();
@@ -745,8 +769,6 @@ class Program
 
     static void UpdateFoodPrice(int vid)
     {
-        // Console.Write("Food Id: ");
-        // int id = ReadInt(1, 99999);
         int id = SelectFoodItem(vid);
         if (id == 0) return;
 
@@ -767,8 +789,6 @@ class Program
 
     static void UpdateFoodQty(int vid)
     {
-        // Console.Write("Food Id: ");
-        // int id = ReadInt(1, 99999);
         int id = SelectFoodItem(vid);
         if (id == 0) return;
         Console.Write("Add Qty (use negative to reduce): ");
@@ -860,8 +880,7 @@ class Program
 
     static void ToggleVendor()
     {
-        // Console.Write("Vendor Id: ");
-        // int id = ReadInt(1, 99999);
+      
         int id = SelectVendor(true);
 
         if (id == 0) return;
@@ -897,8 +916,6 @@ class Program
 
     static void DisableCustomer()
     {
-        // Console.Write("User Id: ");
-        // int id = ReadInt(1, 99999);
         int id = SelectCustomer();
         if (id == 0) return;
 
@@ -948,7 +965,7 @@ class Program
     // ---------------- UX & Utilities ----------------
     static void Header(string title)
     {
-        Console.Clear();
+        // Console.Clear();
         Console.WriteLine("================================");
         Console.WriteLine($" {title}");
         Console.WriteLine("================================");
@@ -1038,6 +1055,20 @@ class Program
             cmd2.ExecuteNonQuery();
         }
 
+        // ---------- Vendors USER ----------
+        var vuserCheck = new SQLiteCommand("SELECT COUNT(1) FROM Users WHERE Role='Vendor'", con);
+        long vuc = (long)vuserCheck.ExecuteScalar()!;
+        if (vuc == 0)
+        {
+            string vhash = Hash("vendor@123");
+            var vcmd = new SQLiteCommand(@"
+            INSERT INTO Users(Username,PasswordHash,Name,Role,IsActive) VALUES
+            ('vendor1',@p,'Vendor One','Vendor',1),
+            ('vendor2',@p,'Vendor Two','Vendor',1),
+            ('vendor3',@p,'Vendor Three','Vendor',1);", con);
+            vcmd.Parameters.AddWithValue("@p", vhash);
+            vcmd.ExecuteNonQuery();
+        }
         // ---------- ADMIN USER ----------
         var c3 = new SQLiteCommand("SELECT COUNT(1) FROM Users WHERE Role='Admin'", con);
         long acount = (long)c3.ExecuteScalar()!;
